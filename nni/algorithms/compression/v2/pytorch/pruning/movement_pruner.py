@@ -164,7 +164,7 @@ class MovementPruner(BasicPruner):
     def __init__(self, model: Module, config_list: List[Dict], trainer: Callable[[Module, Optimizer, Callable], None],
                  traced_optimizer: Traceable, criterion: Callable[[Tensor, Tensor], Tensor], training_epochs: int, warm_up_step: int,
                  cool_down_beginning_step: int, balance_gran: Optional[List[int]] = None, block_sparse_size: Optional[List[int]] = None,
-                 sparsity_means_threshold: bool = False):
+                 sparsity_means_threshold: bool = False, regu_final_lambda: Optional[float] = None):
         self.trainer = trainer
         if isinstance(traced_optimizer, OptimizerConstructHelper):
             self.optimizer_helper = traced_optimizer
@@ -178,6 +178,7 @@ class MovementPruner(BasicPruner):
         self.balance_gran = balance_gran
         self.block_sparse_size = block_sparse_size
         self.sparsity_means_threshold = sparsity_means_threshold
+        self.regu_final_lambda = regu_final_lambda
         super().__init__(model, config_list)
 
     def _validate_config_before_canonical(self, model: Module, config_list: List[Dict]):
@@ -192,6 +193,18 @@ class MovementPruner(BasicPruner):
                 current_sparsity = config['total_sparsity'] * (1 - (1 - (current_step - self.warm_up_step) / (self.cool_down_beginning_step - self.warm_up_step)) ** 3)
                 for op_name in config['op_names']:
                     wrapper_dict[op_name].config['total_sparsity'] = current_sparsity
+    
+    def criterion_patch(self, criterion: Callable[[Tensor, Tensor], Tensor]) -> Callable[[Tensor, Tensor], Tensor]:
+        def patched_criterion(input_tensor: Tensor, target: Tensor):
+            sum_l1 = 0
+            count = 0
+            for wrapper in self.get_modules_wrapper().values():
+                sum_l1 += torch.norm(torch.sigmoid(wrapper.module.weight_score), p=1) / wrapper.module.weight_score.numel()  # type: ignore
+                count += 1
+            scale = 1 - (1 - (self.step_counter - self.warm_up_step) / (self.cool_down_beginning_step - self.warm_up_step)) ** 3
+            scale = min(scale, 1)
+            return criterion(input_tensor, target) + self.regu_final_lambda * scale  * sum_l1 / count
+        return patched_criterion
 
     def reset_tools(self):
         if self.metrics_calculator is None:
@@ -226,7 +239,10 @@ class MovementPruner(BasicPruner):
                 self.load_masks(masks)
 
         if self.data_collector is None:
-            self.data_collector = WeightScoreTrainerBasedDataCollector(self, self.trainer, self.optimizer_helper, self.criterion, self.training_epochs, opt_after_tasks=[_optimizer_patch])
+            if self.regu_final_lambda:
+                self.data_collector = WeightScoreTrainerBasedDataCollector(self, self.trainer, self.optimizer_helper, self.criterion, self.training_epochs, opt_after_tasks=[_optimizer_patch], criterion_patch=self.criterion_patch)
+            else:
+                self.data_collector = WeightScoreTrainerBasedDataCollector(self, self.trainer, self.optimizer_helper, self.criterion, self.training_epochs, opt_after_tasks=[_optimizer_patch])
         else:
             self.data_collector.reset()
 
