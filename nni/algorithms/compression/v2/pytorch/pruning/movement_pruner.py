@@ -199,10 +199,10 @@ class MovementPruner(BasicPruner):
             sum_l1 = 0
             count = 0
             for wrapper in self.get_modules_wrapper().values():
-                sum_l1 += torch.norm(torch.sigmoid(wrapper.module.weight_score), p=1) / wrapper.module.weight_score.numel()  # type: ignore
+                sum_l1 += torch.norm(torch.sigmoid(wrapper.weight_score), p=1) / wrapper.weight_score.numel()  # type: ignore
                 count += 1
             scale = 1 - (1 - (self.step_counter - self.warm_up_step) / (self.cool_down_beginning_step - self.warm_up_step)) ** 3
-            scale = min(scale, 1)
+            scale = min(max(scale, 0), 1)
             return criterion(input_tensor, target) + self.regu_final_lambda * scale  * sum_l1 / count
         return patched_criterion
 

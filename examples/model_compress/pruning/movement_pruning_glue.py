@@ -123,7 +123,7 @@ if __name__ == '__main__':
     # make sure you have used nni.trace to wrap the optimizer class before initialize
     traced_optimizer = nni.trace(Adam)(model.parameters(), lr=2e-5)
     pruner = MovementPruner(model, config_list, p_trainer, traced_optimizer, criterion, training_epochs=10,
-                            warm_up_step=12272, cool_down_beginning_step=98176)
+                            warm_up_step=12272, cool_down_beginning_step=98176, sparsity_means_threshold=True, regu_final_lambda=30)
 
     _, masks = pruner.compress()
     pruner.show_pruned_weights()
