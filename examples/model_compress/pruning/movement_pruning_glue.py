@@ -32,7 +32,7 @@ task_to_keys = {
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-gradient_accumulation_steps = 4
+gradient_accumulation_steps = 8
 
 # a fake criterion because huggingface output already has loss
 def criterion(input, target):
@@ -52,9 +52,9 @@ def trainer(model, optimizer, criterion, train_dataloader):
         loss.backward()
         if counter % gradient_accumulation_steps == 0 or counter == len(train_dataloader):
             optimizer.step()
-        if counter % 400 == 0:
+        if counter % 800 == 0:
             print('[{}]: {}'.format(time.asctime(time.localtime(time.time())), counter))
-        if counter % 4000 == 0:
+        if counter % 8000 == 0:
             print('Step {}: {}'.format(counter // gradient_accumulation_steps, evaluator(model, metric, is_regression, validate_dataloader)))
 
 def evaluator(model, metric, is_regression, eval_dataloader):
@@ -73,8 +73,8 @@ if __name__ == '__main__':
     task_name = 'mnli'
     is_regression = False
     num_labels = 1 if is_regression else (3 if task_name == 'mnli' else 2)
-    train_batch_size = 8
-    eval_batch_size = 8
+    train_batch_size = 4
+    eval_batch_size = 4
 
     set_seed(1024)
 
@@ -112,12 +112,12 @@ if __name__ == '__main__':
 
     model = BertForSequenceClassification.from_pretrained('bert-base-cased', num_labels=num_labels).to(device)
 
-    if task_name == "mnli":
-        print('Initial: {}/{}'.format(evaluator(model, metric, is_regression, validate_dataloader), evaluator(model, metric, is_regression, validate_dataloader2)))
-    else:
-        print('Initial: {}'.format(evaluator(model, metric, is_regression, validate_dataloader)))
+    # if task_name == "mnli":
+    #     print('Initial: {}/{}'.format(evaluator(model, metric, is_regression, validate_dataloader), evaluator(model, metric, is_regression, validate_dataloader2)))
+    # else:
+    #     print('Initial: {}'.format(evaluator(model, metric, is_regression, validate_dataloader)))
 
-    config_list = [{'op_types': ['Linear'], 'op_partial_names': ['bert.encoder'], 'sparsity': 0.9}]
+    config_list = [{'op_types': ['Linear'], 'op_partial_names': ['bert.encoder'], 'sparsity': 0.1}]
     p_trainer = functools.partial(trainer, train_dataloader=train_dataloader)
 
     # make sure you have used nni.trace to wrap the optimizer class before initialize
@@ -127,6 +127,8 @@ if __name__ == '__main__':
 
     _, masks = pruner.compress()
     pruner.show_pruned_weights()
+
+    torch.save(masks, 'movement_masks.pth')
 
     if task_name == "mnli":
         print('Final: {}/{}'.format(evaluator(model, metric, is_regression, validate_dataloader), evaluator(model, metric, is_regression, validate_dataloader2)))
