@@ -32,7 +32,7 @@ task_to_keys = {
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-gradient_accumulation_steps = 8
+gradient_accumulation_steps = 4
 
 # a fake criterion because huggingface output already has loss
 def criterion(input, target):
@@ -52,9 +52,9 @@ def trainer(model, optimizer, criterion, train_dataloader):
         loss.backward()
         if counter % gradient_accumulation_steps == 0 or counter == len(train_dataloader):
             optimizer.step()
-        if counter % 800 == 0:
+        if counter % 400 == 0:
             print('[{}]: {}'.format(time.asctime(time.localtime(time.time())), counter))
-        if counter % 8000 == 0:
+        if counter % 4000 == 0:
             print('Step {}: {}'.format(counter // gradient_accumulation_steps, evaluator(model, metric, is_regression, validate_dataloader)))
 
 def evaluator(model, metric, is_regression, eval_dataloader):
@@ -73,8 +73,8 @@ if __name__ == '__main__':
     task_name = 'mnli'
     is_regression = False
     num_labels = 1 if is_regression else (3 if task_name == 'mnli' else 2)
-    train_batch_size = 4
-    eval_batch_size = 4
+    train_batch_size = 8
+    eval_batch_size = 8
 
     set_seed(1024)
 
@@ -99,16 +99,23 @@ if __name__ == '__main__':
 
     train_dataset = processed_datasets['train']
     validate_dataset = processed_datasets['validation_matched' if task_name == "mnli" else 'validation']
+    validate_dataset2 = processed_datasets['validation_mismatched'] if task_name == "mnli" else None
 
     data_collator = DataCollatorWithPadding(tokenizer)
     train_dataloader = DataLoader(train_dataset, shuffle=True, collate_fn=data_collator, batch_size=train_batch_size)
     validate_dataloader = DataLoader(validate_dataset, collate_fn=data_collator, batch_size=eval_batch_size)
+    validate_dataloader2 = DataLoader(validate_dataset2, collate_fn=data_collator, batch_size=eval_batch_size) if task_name == "mnli" else None
+
+    print(f'training batches per epoch: {len(train_dataloader)}')
 
     metric = load_metric("glue", task_name)
 
     model = BertForSequenceClassification.from_pretrained('bert-base-cased', num_labels=num_labels).to(device)
 
-    print('Initial: {}'.format(evaluator(model, metric, is_regression, validate_dataloader)))
+    if task_name == "mnli":
+        print('Initial: {}/{}'.format(evaluator(model, metric, is_regression, validate_dataloader), evaluator(model, metric, is_regression, validate_dataloader2)))
+    else:
+        print('Initial: {}'.format(evaluator(model, metric, is_regression, validate_dataloader)))
 
     config_list = [{'op_types': ['Linear'], 'op_partial_names': ['bert.encoder'], 'sparsity': 0.9}]
     p_trainer = functools.partial(trainer, train_dataloader=train_dataloader)
@@ -116,12 +123,15 @@ if __name__ == '__main__':
     # make sure you have used nni.trace to wrap the optimizer class before initialize
     traced_optimizer = nni.trace(Adam)(model.parameters(), lr=2e-5)
     pruner = MovementPruner(model, config_list, p_trainer, traced_optimizer, criterion, training_epochs=10,
-                            warm_up_step=12272, cool_down_beginning_step=110448)
+                            warm_up_step=12272, cool_down_beginning_step=98176)
 
     _, masks = pruner.compress()
     pruner.show_pruned_weights()
 
-    print('Final: {}'.format(evaluator(model, metric, is_regression, validate_dataloader)))
+    if task_name == "mnli":
+        print('Final: {}/{}'.format(evaluator(model, metric, is_regression, validate_dataloader), evaluator(model, metric, is_regression, validate_dataloader2)))
+    else:
+        print('Final: {}'.format(evaluator(model, metric, is_regression, validate_dataloader)))
 
     optimizer = Adam(model.parameters(), lr=2e-5)
     trainer(model, optimizer, criterion, train_dataloader)

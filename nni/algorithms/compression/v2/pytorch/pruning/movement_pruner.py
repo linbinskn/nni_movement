@@ -3,7 +3,7 @@
 
 from copy import deepcopy
 import logging
-from typing import Dict, List, Tuple, Callable
+from typing import Dict, List, Optional, Tuple, Callable
 
 import torch
 from torch import autograd, Tensor
@@ -20,7 +20,8 @@ from .tools.base import TrainerBasedDataCollector
 
 from .tools import (
     StraightMetricsCalculator,
-    NormalSparsityAllocator
+    NormalSparsityAllocator,
+    BankSparsityAllocator
 )
 
 _logger = logging.getLogger(__name__)
@@ -162,7 +163,8 @@ class MovementPruner(BasicPruner):
     """
     def __init__(self, model: Module, config_list: List[Dict], trainer: Callable[[Module, Optimizer, Callable], None],
                  traced_optimizer: Traceable, criterion: Callable[[Tensor, Tensor], Tensor], training_epochs: int, warm_up_step: int,
-                 cool_down_beginning_step: int):
+                 cool_down_beginning_step: int, balance_gran: Optional[List[int]] = None, block_sparse_size: Optional[List[int]] = None,
+                 sparsity_means_threshold: bool = False):
         self.trainer = trainer
         if isinstance(traced_optimizer, OptimizerConstructHelper):
             self.optimizer_helper = traced_optimizer
@@ -173,6 +175,9 @@ class MovementPruner(BasicPruner):
         self.warm_up_step = warm_up_step
         self.cool_down_beginning_step = cool_down_beginning_step
         assert self.warm_up_step < self.cool_down_beginning_step, '`warm_up_step` should smaller than `cool_down_beginning_step`'
+        self.balance_gran = balance_gran
+        self.block_sparse_size = block_sparse_size
+        self.sparsity_means_threshold = sparsity_means_threshold
         super().__init__(model, config_list)
 
     def _validate_config_before_canonical(self, model: Module, config_list: List[Dict]):
@@ -190,9 +195,12 @@ class MovementPruner(BasicPruner):
 
     def reset_tools(self):
         if self.metrics_calculator is None:
-            self.metrics_calculator = StraightMetricsCalculator()
+            self.metrics_calculator = StraightMetricsCalculator(block_sparse_size=self.block_sparse_size)
         if self.sparsity_allocator is None:
-            self.sparsity_allocator = NormalSparsityAllocator(self, continuous_mask=False)
+            if self.balance_gran is None:
+                self.sparsity_allocator = NormalSparsityAllocator(self, block_sparse_size=self.block_sparse_size, continuous_mask=False)
+            else:
+                self.sparsity_allocator = BankSparsityAllocator(self, self.balance_gran, block_sparse_size=self.block_sparse_size)
 
         # use Adam to update the weight_score
         assert self.bound_model is not None
@@ -211,7 +219,10 @@ class MovementPruner(BasicPruner):
                 for wrapper in self.get_modules_wrapper().values():
                     data[wrapper.name] = wrapper.weight_score.data
                 metrics = self.metrics_calculator.calculate_metrics(data)  # type: ignore
-                masks = self.sparsity_allocator.generate_sparsity(metrics)  # type: ignore
+                if self.sparsity_means_threshold:
+                    masks = self.sparsity_allocator.generate_sparsity_with_threshold(metrics)
+                else:
+                    masks = self.sparsity_allocator.generate_sparsity(metrics)  # type: ignore
                 self.load_masks(masks)
 
         if self.data_collector is None:

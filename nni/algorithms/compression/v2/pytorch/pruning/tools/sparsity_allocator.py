@@ -41,6 +41,25 @@ class NormalSparsityAllocator(SparsityAllocator):
                 masks[name]['weight'] *= wrapper.weight_mask
         return masks
 
+    def generate_sparsity_with_threshold(self, metrics: Dict[str, Tensor]) -> Dict[str, Dict[str, Tensor]]:
+        masks = {}
+        for name, wrapper in self.pruner.get_modules_wrapper().items():
+            threshold = wrapper.config['total_sparsity']
+
+            assert name in metrics, 'Metric of {} is not calculated.'.format(name)
+
+            # We assume the metric value are all positive right now.
+            metric = metrics[name]
+            if self.continuous_mask:
+                metric *= self._compress_mask(wrapper.weight_mask)  # type: ignore
+            metric = torch.sigmoid(metric)
+            mask = torch.gt(metric, threshold).type_as(metric)
+            masks[name] = self._expand_mask(name, mask)
+            if self.continuous_mask:
+                masks[name]['weight'] *= wrapper.weight_mask
+        return masks
+
+
 class BankSparsityAllocator(SparsityAllocator):
     """
     In bank pruner, all values in weight are divided into different sub blocks each shape

@@ -21,6 +21,21 @@ class StraightMetricsCalculator(MetricsCalculator):
         for name, tensor in data.items():
             # use inplace detach `detach_` here to avoid creating a new tensor
             metrics[name] = tensor.clone().detach_()
+        if self.block_sparse_size is not None:
+            # operation like pooling
+            lower_case_letters = 'abcdefghijklmnopqrstuvwxyz'
+            for name, metric in metrics.items():
+                block_sparse_size = list(self.block_sparse_size)
+                # padding block_sparse_size to metric length if dim is None
+                if self.dim is None:
+                    for _ in range(len(metric.size()) - len(self.block_sparse_size)):
+                        block_sparse_size.insert(0, 1)
+                ein_expression = ''
+                for i, step in enumerate(block_sparse_size):
+                    metric = metric.unfold(i, step, step)
+                    ein_expression += lower_case_letters[i]
+                ein_expression = '...{},{}'.format(ein_expression, ein_expression)
+                metrics[name] = torch.einsum(ein_expression, metric, torch.ones(block_sparse_size).to(metric.device))
         return metrics
 
 
