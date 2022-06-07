@@ -1,6 +1,7 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT license.
 
+from functools import reduce
 from typing import Dict, List, Optional, Union
 
 import torch
@@ -30,12 +31,13 @@ class StraightMetricsCalculator(MetricsCalculator):
                 if self.dim is None:
                     for _ in range(len(metric.size()) - len(self.block_sparse_size)):
                         block_sparse_size.insert(0, 1)
+                scale = reduce(lambda a, b: a * b, block_sparse_size)
                 ein_expression = ''
                 for i, step in enumerate(block_sparse_size):
                     metric = metric.unfold(i, step, step)
                     ein_expression += lower_case_letters[i]
                 ein_expression = '...{},{}'.format(ein_expression, ein_expression)
-                metrics[name] = torch.einsum(ein_expression, metric, torch.ones(block_sparse_size).to(metric.device))
+                metrics[name] = torch.einsum(ein_expression, metric, torch.ones(block_sparse_size).to(metric.device)) / scale
         return metrics
 
 

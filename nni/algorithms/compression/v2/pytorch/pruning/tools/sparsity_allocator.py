@@ -43,6 +43,8 @@ class NormalSparsityAllocator(SparsityAllocator):
 
     def generate_sparsity_with_threshold(self, metrics: Dict[str, Tensor]) -> Dict[str, Dict[str, Tensor]]:
         masks = {}
+        a = 0
+        b = 0
         for name, wrapper in self.pruner.get_modules_wrapper().items():
             threshold = wrapper.config['total_sparsity']
 
@@ -54,9 +56,12 @@ class NormalSparsityAllocator(SparsityAllocator):
                 metric *= self._compress_mask(wrapper.weight_mask)  # type: ignore
             metric = torch.sigmoid(metric)
             mask = torch.gt(metric, threshold).type_as(metric)
+            a += mask.sum()
+            b += mask.numel()
             masks[name] = self._expand_mask(name, mask)
             if self.continuous_mask:
                 masks[name]['weight'] *= wrapper.weight_mask
+        print('sparsity: ', 1 - a / b)
         return masks
 
 

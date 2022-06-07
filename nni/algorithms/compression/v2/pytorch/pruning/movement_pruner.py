@@ -193,7 +193,7 @@ class MovementPruner(BasicPruner):
                 current_sparsity = config['total_sparsity'] * (1 - (1 - (current_step - self.warm_up_step) / (self.cool_down_beginning_step - self.warm_up_step)) ** 3)
                 for op_name in config['op_names']:
                     wrapper_dict[op_name].config['total_sparsity'] = current_sparsity
-    
+
     def criterion_patch(self, criterion: Callable[[Tensor, Tensor], Tensor]) -> Callable[[Tensor, Tensor], Tensor]:
         def patched_criterion(input_tensor: Tensor, target: Tensor):
             sum_l1 = 0
@@ -213,7 +213,7 @@ class MovementPruner(BasicPruner):
             if self.balance_gran is None:
                 self.sparsity_allocator = NormalSparsityAllocator(self, block_sparse_size=self.block_sparse_size, continuous_mask=False)
             else:
-                self.sparsity_allocator = BankSparsityAllocator(self, self.balance_gran, block_sparse_size=self.block_sparse_size)
+                self.sparsity_allocator = BankSparsityAllocator(self, self.balance_gran, block_sparse_size=self.block_sparse_size, continuous_mask=False)
 
         # use Adam to update the weight_score
         assert self.bound_model is not None
@@ -269,8 +269,17 @@ class MovementPruner(BasicPruner):
         # sparsity grow from 0
         for wrapper in self.get_modules_wrapper().values():
             wrapper.config['total_sparsity'] = 0
-        result = super().compress()
+        data = self.data_collector.collect()
+        _logger.debug('Collected Data:\n%s', data)
+        metrics = self.metrics_calculator.calculate_metrics(data)
+        _logger.debug('Metrics Calculate:\n%s', metrics)
+        if self.sparsity_means_threshold:
+            masks = self.sparsity_allocator.generate_sparsity_with_threshold(metrics)
+        else:
+            masks = self.sparsity_allocator.generate_sparsity(metrics)
+        _logger.debug('Masks:\n%s', masks)
+        self.load_masks(masks)
         # del weight_score
         for wrapper in self.get_modules_wrapper().values():
             wrapper.weight_score = None
-        return result
+        return self.bound_model, masks
