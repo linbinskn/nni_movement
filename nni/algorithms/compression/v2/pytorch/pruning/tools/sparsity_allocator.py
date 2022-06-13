@@ -1,6 +1,7 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT license.
 
+from functools import reduce
 import math
 import itertools
 from typing import Any, Dict, List, Tuple, Union, Optional
@@ -32,12 +33,14 @@ class NormalSparsityAllocator(SparsityAllocator):
             metric = metrics[name]
             if self.continuous_mask:
                 metric *= self._compress_mask(wrapper.weight_mask)  # type: ignore
-            prune_num = int(sparsity_rate * metric.numel())
-            if prune_num == 0:
-                threshold = metric.min() - 1
-            else:
-                threshold = torch.topk(metric.view(-1), prune_num, largest=False)[0].max()
-            mask = torch.gt(metric, threshold).type_as(metric)
+
+            flatten_metric = metric.reshape(-1)
+            keep_num = flatten_metric.numel() - int(sparsity_rate * flatten_metric.numel())
+            top = torch.topk(flatten_metric, keep_num)
+            top_mask = torch.zeros_like(flatten_metric)
+            top_mask = top_mask.scatter(0, top.indices, 1.0)
+            mask = top_mask.reshape_as(metric)
+
             masks[name] = self._expand_mask(name, mask)
             if self.continuous_mask:
                 masks[name]['weight'] *= wrapper.weight_mask
@@ -100,26 +103,32 @@ class BankSparsityAllocator(SparsityAllocator):
             assert n_dim >= len(self.balance_gran), 'Dimension of balance_gran should be smaller than metric'
             # make up for balance_gran
             balance_gran = [1] * (n_dim - len(self.balance_gran)) + self.balance_gran
+
+            reshape_size_1 = []
+            reshape_size_2 = []
             for i, j in zip(metric.shape, balance_gran):
                 assert i % j == 0, 'Length of {} weight is not aligned with balance granularity'.format(name)
+                reshape_size_1.append(i // j)
+                reshape_size_1.append(j)
+                reshape_size_2.append(i // j)
+            balance_numel = reduce(lambda x, y: x * y, balance_gran)
+            reshape_size_2.append(balance_numel)
+            permute_dims_1 = [_ * 2 for _ in range(n_dim)] + [_ * 2 + 1 for _ in range(n_dim)]
+            permute_dims_2 = []
+            for i in range(n_dim):
+                permute_dims_2.append(i)
+                permute_dims_2.append(i + n_dim)
 
-            mask = torch.zeros(metric.shape).type_as(metric)
-            loop_iters = [range(int(i / j)) for i, j in zip(metric.shape, balance_gran)]
-            for iter_params in itertools.product(*loop_iters):
-                index_str_list = [f"{iter_param * gran}:{(iter_param+1) * gran}"
-                                  for iter_param, gran in zip(iter_params, balance_gran)]
-                index_str = ",".join(index_str_list)
-                sub_metric_str = "metric[{}]".format(index_str)
-                sub_mask_str = "mask[{}] = mask_bank".format(index_str)
-                metric_bank = eval(sub_metric_str)
-                prune_num = int(sparsity_rate * metric_bank.numel())
-                if prune_num == 0:
-                    threshold = metric_bank.min() - 1
-                else:
-                    threshold = torch.topk(metric_bank.reshape(-1), prune_num, largest=False)[0].max()
-                # mask_bank will be used in exec(sub_mask_str)
-                mask_bank = torch.gt(metric_bank, threshold).type_as(metric_bank)
-                exec(sub_mask_str)
+            _metric = metric.reshape(reshape_size_1).permute(permute_dims_1)
+            reshape_size_3 = _metric.shape
+            _metric = _metric.reshape(reshape_size_2)
+
+            keep_num = balance_numel - int(sparsity_rate * balance_numel)
+
+            top = torch.topk(_metric, keep_num)
+            top_mask = torch.zeros_like(_metric)
+            top_mask = top_mask.scatter(n_dim, top.indices, 1.0)
+            mask = top_mask.reshape(reshape_size_3).permute(permute_dims_2).reshape_as(metric)
 
             masks[name] = self._expand_mask(name, mask)
             if self.continuous_mask:
