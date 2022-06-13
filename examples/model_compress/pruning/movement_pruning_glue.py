@@ -117,18 +117,18 @@ if __name__ == '__main__':
     # else:
     #     print('Initial: {}'.format(evaluator(model, metric, is_regression, validate_dataloader)))
 
-    config_list = [{'op_types': ['Linear'], 'op_partial_names': ['bert.encoder'], 'sparsity': 0.4}]
+    config_list = [{'op_types': ['Linear'], 'op_partial_names': ['bert.encoder'], 'sparsity': 0.875}]
     p_trainer = functools.partial(trainer, train_dataloader=train_dataloader)
 
     # make sure you have used nni.trace to wrap the optimizer class before initialize
     traced_optimizer = nni.trace(Adam)(model.parameters(), lr=2e-5)
     pruner = MovementPruner(model, config_list, p_trainer, traced_optimizer, criterion, training_epochs=12,
-                            warm_up_step=12272, cool_down_beginning_step=98176, sparsity_means_threshold=True, regu_final_lambda=30, block_sparse_size=None)
+                            warm_up_step=12272, cool_down_beginning_step=98176, balance_gran=[1, 16], block_sparse_size=[16, 1])
 
     _, masks = pruner.compress()
     pruner.show_pruned_weights()
 
-    torch.save(masks, 'movement_masks_5.pth')
+    torch.save(masks, 'movement_masks_6.pth')
 
     if task_name == "mnli":
         print('Final: {}/{}'.format(evaluator(model, metric, is_regression, validate_dataloader), evaluator(model, metric, is_regression, validate_dataloader2)))
