@@ -387,7 +387,7 @@ class SparsityAllocator:
                 weight_mask = weight_mask.unsqueeze(i + 1)
                 expand_size.insert(i + 1, block_width)
                 reshape_size[i] *= block_width
-            weight_mask = weight_mask.expand(expand_size).reshape(reshape_size)
+            weight_mask = weight_mask.expand(expand_size).reshape(reshape_size).clone()
 
         wrapper = self.pruner.get_modules_wrapper()[name]
         weight_size = wrapper.weight.data.size()  # type: ignore
