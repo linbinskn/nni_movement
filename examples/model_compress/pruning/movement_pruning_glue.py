@@ -118,9 +118,9 @@ if __name__ == '__main__':
     traced_optimizer = nni.trace(Adam)(model.parameters(), lr=2e-5)
 
     ###################################### finegraind soft-movement #########################################
-    config_list = [{'op_types': ['Linear'], 'op_partial_names': ['bert.encoder'], 'sparsity': 0.4}]
-    pruner = MovementPruner(model, config_list, p_trainer, traced_optimizer, criterion, training_epochs=12,
-                            warm_up_step=12272, cool_down_beginning_step=98176, sparsity_means_threshold=True, regu_final_lambda=30)
+    # config_list = [{'op_types': ['Linear'], 'op_partial_names': ['bert.encoder'], 'sparsity': 0.4}]
+    # pruner = MovementPruner(model, config_list, p_trainer, traced_optimizer, criterion, training_epochs=12,
+    #                         warm_up_step=12272, cool_down_beginning_step=98176, sparsity_means_threshold=True, regu_final_lambda=30)
     #########################################################################################################
 
     ################################### balance 16 align 16 hard-movement ###################################
