@@ -117,18 +117,18 @@ if __name__ == '__main__':
     # else:
     #     print('Initial: {}'.format(evaluator(model, metric, is_regression, validate_dataloader)))
 
-    config_list = [{'op_types': ['Linear'], 'op_partial_names': ['bert.encoder'], 'sparsity': 0.1}]
+    config_list = [{'op_types': ['Linear'], 'op_partial_names': ['bert.encoder'], 'sparsity': 0.4}]
     p_trainer = functools.partial(trainer, train_dataloader=train_dataloader)
 
     # make sure you have used nni.trace to wrap the optimizer class before initialize
     traced_optimizer = nni.trace(Adam)(model.parameters(), lr=2e-5)
-    pruner = MovementPruner(model, config_list, p_trainer, traced_optimizer, criterion, training_epochs=10,
-                            warm_up_step=0, cool_down_beginning_step=98176, sparsity_means_threshold=True, regu_final_lambda=30, block_sparse_size=[32, 32])
+    pruner = MovementPruner(model, config_list, p_trainer, traced_optimizer, criterion, training_epochs=12,
+                            warm_up_step=12272, cool_down_beginning_step=98176, sparsity_means_threshold=True, regu_final_lambda=30, block_sparse_size=None)
 
     _, masks = pruner.compress()
     pruner.show_pruned_weights()
 
-    torch.save(masks, 'movement_masks.pth')
+    torch.save(masks, 'movement_masks_5.pth')
 
     if task_name == "mnli":
         print('Final: {}/{}'.format(evaluator(model, metric, is_regression, validate_dataloader), evaluator(model, metric, is_regression, validate_dataloader2)))
@@ -137,4 +137,17 @@ if __name__ == '__main__':
 
     optimizer = Adam(model.parameters(), lr=2e-5)
     trainer(model, optimizer, criterion, train_dataloader)
-    print('After 1 epoch finetuning: {}'.format(evaluator(model, metric, is_regression, validate_dataloader)))
+    if task_name == "mnli":
+        print('After 1 epoch finetuning: {}/{}'.format(evaluator(model, metric, is_regression, validate_dataloader), evaluator(model, metric, is_regression, validate_dataloader2)))
+    else:
+        print('After 1 epoch finetuning: {}'.format(evaluator(model, metric, is_regression, validate_dataloader)))
+    trainer(model, optimizer, criterion, train_dataloader)
+    if task_name == "mnli":
+        print('After 2 epoch finetuning: {}/{}'.format(evaluator(model, metric, is_regression, validate_dataloader), evaluator(model, metric, is_regression, validate_dataloader2)))
+    else:
+        print('After 2 epoch finetuning: {}'.format(evaluator(model, metric, is_regression, validate_dataloader)))
+    trainer(model, optimizer, criterion, train_dataloader)
+    if task_name == "mnli":
+        print('After 3 epoch finetuning: {}/{}'.format(evaluator(model, metric, is_regression, validate_dataloader), evaluator(model, metric, is_regression, validate_dataloader2)))
+    else:
+        print('After 3 epoch finetuning: {}'.format(evaluator(model, metric, is_regression, validate_dataloader)))
