@@ -27,7 +27,9 @@ class NormalSparsityAllocator(SparsityAllocator):
         for name, wrapper in self.pruner.get_modules_wrapper().items():
             sparsity_rate = wrapper.config['total_sparsity']
 
-            assert name in metrics, 'Metric of {} is not calculated.'.format(name)
+            if name not in metrics:
+                continue
+            # assert name in metrics, 'Metric of {} is not calculated.'.format(name)
 
             # We assume the metric value are all positive right now.
             metric = metrics[name]
@@ -46,7 +48,8 @@ class NormalSparsityAllocator(SparsityAllocator):
                 masks[name]['weight'] *= wrapper.weight_mask
             a += masks[name]['weight'].sum()
             b += masks[name]['weight'].numel()
-        print('sparsity: ', 1 - a / b)
+        if b != 0:
+            print('sparsity: ', 1 - a / b)
         return masks
 
     def generate_sparsity_with_threshold(self, metrics: Dict[str, Tensor]) -> Dict[str, Dict[str, Tensor]]:
@@ -93,7 +96,9 @@ class BankSparsityAllocator(SparsityAllocator):
         for name, wrapper in self.pruner.get_modules_wrapper().items():
             sparsity_rate = wrapper.config['total_sparsity']
 
-            assert name in metrics, 'Metric of {} is not calculated.'.format(name)
+            if name not in metrics:
+                continue
+            # assert name in metrics, 'Metric of {} is not calculated.'.format(name)
 
             # We assume the metric value are all positive right now.
             metric = metrics[name]

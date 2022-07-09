@@ -72,6 +72,10 @@ class WeightScoreTrainerBasedDataCollector(TrainerBasedDataCollector):
     """
     Collect all weight_score in wrappers as data used to calculate metrics.
     """
+    def __init__(self, module_name_list, *args, **kwargs):
+        self.module_name_list = module_name_list
+        TrainerBasedDataCollector.__init__(self, *args, **kwargs)
+
     def collect(self) -> Dict[str, Tensor]:
         assert self.compressor.bound_model is not None
         for _ in range(self.training_epochs):
@@ -79,7 +83,8 @@ class WeightScoreTrainerBasedDataCollector(TrainerBasedDataCollector):
 
         data = {}
         for _, wrapper in self.compressor.get_modules_wrapper().items():
-            data[wrapper.name] = wrapper.weight_score.data  # type: ignore
+            if wrapper.name in self.module_name_list:
+                data[wrapper.name] = wrapper.weight_score.data  # type: ignore
         return data
 
 
@@ -163,8 +168,9 @@ class MovementPruner(BasicPruner):
     """
     def __init__(self, model: Module, config_list: List[Dict], trainer: Callable[[Module, Optimizer, Callable], None],
                  traced_optimizer: Traceable, criterion: Callable[[Tensor, Tensor], Tensor], training_epochs: int, warm_up_step: int,
-                 cool_down_beginning_step: int, balance_gran: Optional[List[int]] = None, block_sparse_size: Optional[List[int]] = None,
-                 sparsity_means_threshold: bool = False, regu_final_lambda: Optional[float] = None):
+                 cool_down_beginning_step: int, balance_gran: Optional[List[int]] = None, attention_block_sparse_size: Optional[List[int]] = None,
+                 ffn_block_sparse_size: Optional[List[int]] = None, sparsity_means_threshold: bool = False, regu_final_lambda: Optional[float] = None,
+                 attention_name_list: Optional[List[str]] = None, ffn_name_list: Optional[List[str]] = None):
         self.trainer = trainer
         if isinstance(traced_optimizer, OptimizerConstructHelper):
             self.optimizer_helper = traced_optimizer
@@ -176,9 +182,20 @@ class MovementPruner(BasicPruner):
         self.cool_down_beginning_step = cool_down_beginning_step
         assert self.warm_up_step < self.cool_down_beginning_step, '`warm_up_step` should smaller than `cool_down_beginning_step`'
         self.balance_gran = balance_gran
-        self.block_sparse_size = block_sparse_size
+        # self.block_sparse_size = block_sparse_size
+        self.attention_block_sparse_size = attention_block_sparse_size
+        self.ffn_block_sparse_size = ffn_block_sparse_size
         self.sparsity_means_threshold = sparsity_means_threshold
         self.regu_final_lambda = regu_final_lambda
+        
+        self.attention_name_list = attention_name_list
+        self.ffn_name_list = ffn_name_list
+        self.attention_data_collector = None
+        self.ffn_data_collector = None
+        self.attention_metrics_calculator = None
+        self.ffn_metrics_calculator = None
+        self.attention_sparsity_allocator = None
+        self.ffn_sparsity_allocator = None
         super().__init__(model, config_list)
 
     def _validate_config_before_canonical(self, model: Module, config_list: List[Dict]):
@@ -207,13 +224,22 @@ class MovementPruner(BasicPruner):
         return patched_criterion
 
     def reset_tools(self):
-        if self.metrics_calculator is None:
-            self.metrics_calculator = StraightMetricsCalculator(block_sparse_size=self.block_sparse_size)
-        if self.sparsity_allocator is None:
+        # if self.metrics_calculator is None:
+        #    self.metrics_calculator = StraightMetricsCalculator(block_sparse_size=self.block_sparse_size)
+        if self.attention_metrics_calculator is None:
+            self.attention_metrics_calculator = StraightMetricsCalculator(block_sparse_size=self.attention_block_sparse_size)
+        
+        if self.ffn_metrics_calculator is None:
+            self.ffn_metrics_calculator = StraightMetricsCalculator(block_sparse_size=self.ffn_block_sparse_size)
+
+        if self.attention_sparsity_allocator is None:
+            self.attention_sparsity_allocator = NormalSparsityAllocator(self, block_sparse_size=self.attention_block_sparse_size, continuous_mask=False)
+
+        if self.ffn_sparsity_allocator is None:
             if self.balance_gran is None:
-                self.sparsity_allocator = NormalSparsityAllocator(self, block_sparse_size=self.block_sparse_size, continuous_mask=False)
+                self.ffn_sparsity_allocator = NormalSparsityAllocator(self, block_sparse_size=self.ffn_block_sparse_size, continuous_mask=False)
             else:
-                self.sparsity_allocator = BankSparsityAllocator(self, self.balance_gran, block_sparse_size=self.block_sparse_size, continuous_mask=False)
+                self.ffn_sparsity_allocator = BankSparsityAllocator(self, self.balance_gran, block_sparse_size=self.ffn_block_sparse_size, continuous_mask=False)
 
         # use Adam to update the weight_score
         assert self.bound_model is not None
@@ -228,6 +254,33 @@ class MovementPruner(BasicPruner):
             self.step_counter += 1
             if self.step_counter > self.warm_up_step:
                 self.cubic_schedule(self.step_counter)
+                attention_data = {}
+                for wrapper in self.get_modules_wrapper().values():
+                    if wrapper.name in self.attention_name_list:
+                        attention_data[wrapper.name] = wrapper.weight_score.data  # type: ignore
+                attention_metrics = self.attention_metrics_calculator.calculate_metrics(attention_data)
+                if self.sparsity_means_threshold:
+                    attention_masks = self.attention_sparsity_allocator.generate_sparsity_with_threshold(attention_metrics)
+                else:
+                    attention_masks = self.attention_sparsity_allocator.generate_sparsity(attention_metrics)
+
+
+                ffn_data = {}
+                for wrapper in self.get_modules_wrapper().values():
+                    if wrapper.name in self.ffn_name_list:
+                        ffn_data[wrapper.name] = wrapper.weight_score.data  # type: ignore
+                ffn_metrics = self.ffn_metrics_calculator.calculate_metrics(ffn_data)
+                if self.sparsity_means_threshold:
+                    ffn_masks = self.ffn_sparsity_allocator.generate_sparsity_with_threshold(ffn_metrics)
+                else:
+                    ffn_masks = self.ffn_sparsity_allocator.generate_sparsity(ffn_metrics)
+                
+                masks = attention_masks
+                masks.update(ffn_masks)
+                self.load_masks(masks)
+
+                """
+                self.cubic_schedule(self.step_counter)
                 data = {}
                 for wrapper in self.get_modules_wrapper().values():
                     data[wrapper.name] = wrapper.weight_score.data
@@ -237,14 +290,24 @@ class MovementPruner(BasicPruner):
                 else:
                     masks = self.sparsity_allocator.generate_sparsity(metrics)  # type: ignore
                 self.load_masks(masks)
+                """
 
-        if self.data_collector is None:
+        
+        if self.attention_data_collector is None:
             if self.regu_final_lambda:
-                self.data_collector = WeightScoreTrainerBasedDataCollector(self, self.trainer, self.optimizer_helper, self.criterion, self.training_epochs, opt_after_tasks=[_optimizer_patch], criterion_patch=self.criterion_patch)
+                self.attention_data_collector = WeightScoreTrainerBasedDataCollector(self.attention_name_list, self, self.trainer, self.optimizer_helper, self.criterion, self.training_epochs, opt_after_tasks=[_optimizer_patch], criterion_patch=self.criterion_patch)
             else:
-                self.data_collector = WeightScoreTrainerBasedDataCollector(self, self.trainer, self.optimizer_helper, self.criterion, self.training_epochs, opt_after_tasks=[_optimizer_patch])
+                self.attention_data_collector = WeightScoreTrainerBasedDataCollector(self.attention_name_list, self, self.trainer, self.optimizer_helper, self.criterion, self.training_epochs, opt_after_tasks=[_optimizer_patch])
         else:
-            self.data_collector.reset()
+            self.attention_data_collector.reset()
+
+        if self.ffn_data_collector is None:
+            if self.regu_final_lambda:
+                self.ffn_data_collector = WeightScoreTrainerBasedDataCollector(self.ffn_name_list, self, self.trainer, self.optimizer_helper, self.criterion, self.training_epochs, opt_after_tasks=[_optimizer_patch], criterion_patch=self.criterion_patch)
+            else:
+                self.ffn_data_collector = WeightScoreTrainerBasedDataCollector(self.ffn_name_list, self, self.trainer, self.optimizer_helper, self.criterion, self.training_epochs, opt_after_tasks=[_optimizer_patch])
+        else:
+            self.ffn_data_collector.reset()
 
     def _wrap_modules(self, layer: LayerInfo, config: Dict):
         """
@@ -269,15 +332,32 @@ class MovementPruner(BasicPruner):
         # sparsity grow from 0
         for wrapper in self.get_modules_wrapper().values():
             wrapper.config['total_sparsity'] = 0
-        data = self.data_collector.collect()
-        _logger.debug('Collected Data:\n%s', data)
-        metrics = self.metrics_calculator.calculate_metrics(data)
-        _logger.debug('Metrics Calculate:\n%s', metrics)
+
+        attention_data = self.attention_data_collector.collect()
+        _logger.debug('Collected attention Data')
+        attention_metrics = self.attention_metrics_calculator.calculate_metrics(attention_data)
+        _logger.debug('Attention metrics Calculate')
         if self.sparsity_means_threshold:
-            masks = self.sparsity_allocator.generate_sparsity_with_threshold(metrics)
+            attention_masks = self.attention_sparsity_allocator.generate_sparsity_with_threshold(attention_metrics)
         else:
-            masks = self.sparsity_allocator.generate_sparsity(metrics)
-        _logger.debug('Masks:\n%s', masks)
+            attention_masks = self.attention_sparsity_allocator.generate_sparsity(attention_metrics)
+
+        ffn_data = {}
+        for wrapper in self.get_modules_wrapper().values():
+            if wrapper.name in self.ffn_name_list:
+                ffn_data[wrapper.name] = wrapper.weight_score.data  # type: ignore
+        # ffn_data = self.ffn_data_collector.collect()
+        _logger.debug('Collected ffn Data')
+        ffn_metrics = self.ffn_metrics_calculator.calculate_metrics(ffn_data)
+        _logger.debug('ffn metrics Calculate')
+        if self.sparsity_means_threshold:
+            ffn_masks = self.ffn_sparsity_allocator.generate_sparsity_with_threshold(ffn_metrics)
+        else:
+            ffn_masks = self.ffn_sparsity_allocator.generate_sparsity(ffn_metrics)
+
+        masks = attention_masks
+        masks.update(ffn_masks)
+        _logger.debug('Mask generated')
         self.load_masks(masks)
         # del weight_score
         for wrapper in self.get_modules_wrapper().values():
